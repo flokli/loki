@@ -336,7 +336,7 @@ func (d *Distributor) Push(ctx context.Context, req *logproto.PushRequest) (*log
 	case err := <-tracker.err:
 		return nil, err
 	case <-tracker.done:
-		return &logproto.PushResponse{}, nil
+		return &logproto.PushResponse{}, validationErr
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
@@ -363,7 +363,13 @@ func (d *Distributor) truncateLines(vContext validationContext, stream *logproto
 
 // TODO taken from Cortex, see if we can refactor out an usable interface.
 func (d *Distributor) sendToIngester(ctx context.Context, ingester ring.InstanceDesc, streams []*streamTracker, pushTracker *pushTracker) {
-	err := d.executePushRequest(ctx, ingester, streams)
+
+	payload := make([]logproto.Stream, len(streams))
+	for i, s := range streams {
+		payload[i] = s.stream
+	}
+
+	err := d.executePushRequest(ctx, ingester, payload)
 	if err == nil {
 		// If the push rpc call to the ingester succeeds, we decrement the
 		// successBucket counter for each stream sent.
@@ -400,19 +406,13 @@ func (d *Distributor) sendToIngester(ctx context.Context, ingester ring.Instance
 }
 
 // TODO taken from Cortex, see if we can refactor out an usable interface.
-func (d *Distributor) executePushRequest(ctx context.Context, ingester ring.InstanceDesc, streams []*streamTracker) error {
+func (d *Distributor) executePushRequest(ctx context.Context, ingester ring.InstanceDesc, streams []logproto.Stream) error {
 	c, err := d.pool.GetClientFor(ingester.Addr)
 	if err != nil {
 		return err
 	}
 
-	req := &logproto.PushRequest{
-		Streams: make([]logproto.Stream, len(streams)),
-	}
-	for i, s := range streams {
-		req.Streams[i] = s.stream
-	}
-
+	req := &logproto.PushRequest{Streams: streams}
 	_, err = c.(logproto.PusherClient).Push(ctx, req)
 	d.ingesterAppends.WithLabelValues(ingester.Addr).Inc()
 	if err != nil {
